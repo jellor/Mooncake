@@ -14,6 +14,9 @@
 
 #include "config.h"
 
+#include <dirent.h>
+#include <unistd.h>
+
 namespace mooncake {
 void loadGlobalConfig(GlobalConfig &config) {
     const char *num_cq_per_ctx_env = std::getenv("MC_NUM_CQ_PER_CTX");
@@ -179,6 +182,18 @@ void loadGlobalConfig(GlobalConfig &config) {
         config.metacache = false;
     }
 
+    const char *handshake_listen_backlog =
+        std::getenv("MC_HANDSHAKE_LISTEN_BACKLOG");
+    if (handshake_listen_backlog) {
+        int val = std::stoi(handshake_listen_backlog);
+        if (val > 0) {
+            config.handshake_listen_backlog = val;
+        } else {
+            LOG(WARNING) << "Ignore value from environment variable "
+                            "MC_HANDSHAKE_LISTEN_BACKLOG";
+        }
+    }
+
     const char *log_level = std::getenv("MC_LOG_LEVEL");
     config.trace = false;
     if (log_level) {
@@ -194,6 +209,39 @@ void loadGlobalConfig(GlobalConfig &config) {
             config.log_level = google::ERROR;
     }
     FLAGS_minloglevel = config.log_level;
+
+    const char *slice_timeout_env = std::getenv("MC_SLICE_TIMEOUT");
+    if (slice_timeout_env) {
+        int val = atoi(slice_timeout_env);
+        if (val > 0 && val < 65536)
+            config.slice_timeout = val;
+        else
+            LOG(WARNING)
+                << "Ignore value from environment variable MC_SLICE_TIMEOUT";
+    }
+
+    const char *log_dir_path = std::getenv("MC_LOG_DIR");
+    if (log_dir_path) {
+        google::InitGoogleLogging("mooncake-transfer-engine");
+        if (opendir(log_dir_path) == NULL) {
+            LOG(WARNING)
+                << "Path [" << log_dir_path
+                << "] is not a valid directory path. Still logging to stderr.";
+        } else if (access(log_dir_path, W_OK) != 0) {
+            LOG(WARNING)
+                << "Path [" << log_dir_path
+                << "] is not a permitted directory path for the current user. \
+                Still logging to stderr.";
+        } else {
+            FLAGS_log_dir = log_dir_path;
+            FLAGS_logtostderr = 0;
+            FLAGS_stop_logging_if_full_disk = true;
+        }
+    }
+
+    if (std::getenv("MC_USE_IPV6")) {
+        config.use_ipv6 = true;
+    }
 }
 
 std::string mtuLengthToString(ibv_mtu mtu) {

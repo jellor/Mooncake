@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "multi_transport.h"
+#include "config.h"
 
 #include "transport/rdma_transport/rdma_transport.h"
 #ifdef USE_TCP
@@ -21,6 +22,9 @@
 #include "transport/transport.h"
 #ifdef USE_NVMEOF
 #include "transport/nvmeof_transport/nvmeof_transport.h"
+#endif
+#ifdef USE_NVLINK
+#include "transport/nvlink_transport/nvlink_transport.h"
 #endif
 
 #include <cassert>
@@ -96,8 +100,8 @@ Status MultiTransport::submitTransfer(
         auto status = entry.first->submitTransferTask(entry.second.request_list,
                                                       entry.second.task_list);
         if (!status.ok()) {
-            LOG(ERROR) << "Failed to submit transfer task to "
-                       << entry.first->getName();
+            // LOG(ERROR) << "Failed to submit transfer task to "
+            //            << entry.first->getName();
             overall_status = status;
         }
     }
@@ -115,6 +119,7 @@ Status MultiTransport::getTransferStatus(BatchID batch_id, size_t task_id,
     status.transferred_bytes = task.transferred_bytes;
     uint64_t success_slice_count = task.success_slice_count;
     uint64_t failed_slice_count = task.failed_slice_count;
+    assert(task.slice_count);
     if (success_slice_count + failed_slice_count == task.slice_count) {
         if (failed_slice_count) {
             status.s = Transport::TransferStatusEnum::FAILED;
@@ -123,6 +128,20 @@ Status MultiTransport::getTransferStatus(BatchID batch_id, size_t task_id,
         }
         task.is_finished = true;
     } else {
+        if (globalConfig().slice_timeout > 0) {
+            auto current_ts = getCurrentTimeInNano();
+            const int64_t kPacketDeliveryTimeout = 
+                globalConfig().slice_timeout * 1000000000;
+            for (auto &slice : task.slice_list) {
+                auto ts = slice->ts;
+                if (ts > 0 && current_ts > ts &&
+                    current_ts - ts > kPacketDeliveryTimeout) {
+                    LOG(INFO) << "Slice timeout detected";
+                    status.s = Transport::TransferStatusEnum::TIMEOUT;
+                    return Status::OK();
+                }
+            }
+        }
         status.s = Transport::TransferStatusEnum::WAITING;
     }
     return Status::OK();
@@ -142,6 +161,11 @@ Transport *MultiTransport::installTransport(const std::string &proto,
 #ifdef USE_NVMEOF
     else if (std::string(proto) == "nvmeof") {
         transport = new NVMeoFTransport();
+    }
+#endif
+#ifdef USE_NVLINK
+    else if (std::string(proto) == "nvlink") {
+        transport = new NvlinkTransport();
     }
 #endif
 
